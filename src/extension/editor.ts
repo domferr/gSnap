@@ -189,7 +189,7 @@ export class Zone extends ZoneBase {
         this.stage.add_child(this.widget);
     }
 
-    public createWidget(styleClass: string = 'grid-preview') {
+    public createWidget(styleClass: string = 'tile-preview') {
         this.widget = new St.BoxLayout({ style_class: styleClass });
         this.widget.visible = false;
     }
@@ -248,6 +248,47 @@ export class Zone extends ZoneBase {
     }
 }
 
+export class AnimatedZone extends Zone {
+    private animationRunning: boolean = false;
+
+    animateChanges(newX: number, newY: number, newWidth: number, newHeight: number) {
+        //log("ANIMATEEE???");
+        if (this.animationRunning) return;
+
+        // if both position and width are not changed
+        // then there is nothing to animate
+        if (newX == this.x && 
+            newY == this.y &&
+            newWidth == this.width &&
+            newHeight == this.height)
+            return;
+        
+        //log("YEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEESSS");
+        this.x = newX;
+        this.y = newY;
+        this.width = newWidth;
+        this.height = newHeight;
+        (this.widget as any).ease({
+            time: 0.3,
+            x: Math.max(0, this.innerX),
+            y: Math.max(0, this.innerY),
+            width: Math.max(0, this.innerWidth),
+            height: Math.max(0, this.innerHeight),
+            transition: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => this.animationRunning = false
+        });
+        this.animationRunning = true;
+    }
+
+    positionChanged() {
+
+    }
+
+    sizeChanged() {
+        
+    }
+}
+
 export class TabbedZone extends Zone {
     public tabHeight: number = 50;
     public tabWidth: number = 200;
@@ -267,7 +308,7 @@ export class TabbedZone extends Zone {
         return super.innerHeight;
     }
 
-    createWidget(styleClass: string = 'grid-preview') {
+    createWidget(styleClass: string = 'tile-preview') {
         this.widget = new St.BoxLayout({ style_class: styleClass });
         this.widget.visible = false;
     }
@@ -710,28 +751,6 @@ export class ZoneDisplay extends ZoneGroup {
         }
     }
 
-    public getSelectionRect(): Rectangle | undefined {
-        let [x, y] = global.get_pointer();
-        let children = this.recursiveChildren();
-        let smallestX = x, smallestY = y, biggestX = x, biggestY = y;
-        for (let i = 0; i < children.length; i++) {
-            let zone = (children[i] as Zone);
-            if (!zone.selected) continue;
-            
-            if (zone.innerX < smallestX) smallestX = zone.innerX;
-            if (zone.innerY < smallestY) smallestY = zone.innerY;
-
-            if (zone.innerX + zone.innerWidth > biggestX)  
-                biggestX  = zone.innerX + zone.innerWidth;
-            if (zone.innerY + zone.innerHeight > biggestY) 
-                biggestY  = zone.innerY + zone.innerHeight;
-        }
-        // no zones selected
-        if (biggestX - smallestX == 0) return undefined;
-        
-        return { x : smallestX, y: smallestY, width: biggestX - smallestX, height: biggestY - smallestY };
-    }
-
     protected createMarginItem() {
 
     }
@@ -888,9 +907,12 @@ export class ZoneManager extends ZoneDisplay {
     private trackCursorTimeoutId: number | null = null;
     private isShowing: boolean = false;
     private _select_multiple_zones: boolean = false;
+    private _last_selection_zone: AnimatedZone;
 
     constructor(monitor: Monitor, layout: LayoutItem, margin: number) {
         super(monitor, layout, margin);
+        this._last_selection_zone = new AnimatedZone(layout, this.parent, this.stage);
+        this._last_selection_zone.margin = this.margin;
     }
 
     adjustLayout(root: ZoneDisplay) {
@@ -907,17 +929,57 @@ export class ZoneManager extends ZoneDisplay {
         }
     }
 
-    public highlightZonesUnderCursor() {
+    public getSelectionRect(): Rectangle | undefined {
         let [x, y] = global.get_pointer();
-        var children = this.recursiveChildren();
-        for (const zone of children) {
-            let contained = zone.contains(x, y);
-            
-            (zone as Zone).hover = contained; // hover the one on which the cursor is
-            (zone as Zone).selected = contained || (this._select_multiple_zones && (zone as Zone).selected);
-        }
+        // if the cursor is not inside the last selected zone,
+        // then no zones have been selected since the last
+        // selection were performed
+        if (!this._last_selection_zone.contains(x, y)) 
+            return undefined;
+        
+        return { 
+            x : this._last_selection_zone.innerX, 
+            y: this._last_selection_zone.innerY, 
+            width: this._last_selection_zone.innerWidth, 
+            height: this._last_selection_zone.innerHeight 
+        };
     }
 
+    public highlightZonesUnderCursor() {
+        let [x, y] = global.get_pointer();
+        let children = this.recursiveChildren();
+        let smallestX = x, smallestY = y, biggestX = x, biggestY = y;
+        for (let i = 0; i < children.length; i++) {
+            let zone = (children[i] as Zone);
+            let contained = zone.contains(x, y);
+            zone.hover = contained; // hover the one on which the cursor is
+            zone.selected = contained || (this._select_multiple_zones && (zone as Zone).selected);
+            if (!zone.selected) continue;
+            
+            if (zone.x < smallestX) smallestX = zone.x;
+            if (zone.y < smallestY) smallestY = zone.y;
+
+            if (zone.x + zone.width > biggestX)  
+                biggestX  = zone.x + zone.width;
+            if (zone.y + zone.height > biggestY) 
+                biggestY  = zone.y + zone.height;
+        }
+
+        if (biggestX - smallestX == 0 || biggestY - smallestY == 0) {
+            return;
+        }
+
+        this._last_selection_zone.show();
+        this._last_selection_zone.animateChanges(smallestX, smallestY, biggestX - smallestX, biggestY - smallestY);
+    }
+
+    reset_selection_zone() {
+        this._last_selection_zone.x = 0;
+        this._last_selection_zone.y = 0;
+        this._last_selection_zone.width = 0;
+        this._last_selection_zone.height = 0;
+    }
+    
     public show() {
         this.isShowing = true;
         super.show();
@@ -949,6 +1011,8 @@ export class ZoneManager extends ZoneDisplay {
         if (this.trackCursorTimeoutId) {
             GLib.Source.remove(this.trackCursorTimeoutId);
             this.trackCursorTimeoutId = null;
+            this.reset_selection_zone();
+            this._last_selection_zone.hide();
         }
     }
 
